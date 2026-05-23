@@ -1,10 +1,12 @@
 import asyncio
+import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiohttp import web
 
 TOKEN = "8651896465:AAEYYUoxcWHBzJdk8jTwFB79yGqP3semOwY"
 YOUR_ID = 1447998146
@@ -163,7 +165,13 @@ class RepairState(StatesGroup):
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ============ НАСТРОЙКА КНОПКИ MENU (иконка внизу экрана) ============
+def get_main_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📱 Заказать ремонт", callback_data="repair")],
+        [InlineKeyboardButton(text="📞 Контакты", callback_data="contacts")],
+        [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
+    ])
+
 async def setup_bot_commands():
     commands = [
         BotCommand(command="/start", description="🏠 Главное меню"),
@@ -173,7 +181,26 @@ async def setup_bot_commands():
     ]
     await bot.set_my_commands(commands)
 
-# ============ ОБРАБОТЧИКИ КОМАНД ИЗ МЕНЮ ============
+# ============ КОНТАКТЫ ============
+async def show_contacts(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        f"📞 КОНТАКТЫ\n\n📍 {ADDRESS}\n📱 {PHONE}\n⏰ Ежедневно с 10 до 20",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")]])
+    )
+    await callback.answer()
+
+async def show_help(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "❓ ПОМОЩЬ\n\nВыберите бренд → модель → услугу → качество → оставьте номер",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")]])
+    )
+    await callback.answer()
+
+async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("🔧 Главное меню\n\nВыберите действие:", reply_markup=get_main_keyboard())
+    await callback.answer()
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -200,45 +227,24 @@ async def cmd_contacts(message: types.Message):
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(
-        "❓ ПОМОЩЬ\n\n"
-        "📱 /repair - Заказать ремонт\n"
-        "📞 /contacts - Наши контакты\n"
-        "🏠 /start - Главное меню\n\n"
-        "Или просто нажмите кнопку MENU внизу экрана!",
+        "❓ ПОМОЩЬ\n\n📱 /repair - Заказать ремонт\n📞 /contacts - Наши контакты\n🏠 /start - Главное меню",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]])
     )
 
-def get_main_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📱 Заказать ремонт", callback_data="repair")],
-        [InlineKeyboardButton(text="📞 Контакты", callback_data="contacts")],
-        [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
-    ])
-
 @dp.callback_query(lambda c: c.data == "contacts")
-async def show_contacts(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        f"📞 КОНТАКТЫ\n\n📍 {ADDRESS}\n📱 {PHONE}\n⏰ Ежедневно с 10 до 20",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")]])
-    )
-    await callback.answer()
+async def contacts_callback(callback: types.CallbackQuery):
+    await show_contacts(callback)
 
 @dp.callback_query(lambda c: c.data == "help")
-async def show_help(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "❓ ПОМОЩЬ\n\nВыберите бренд → модель → услугу → качество → оставьте номер",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")]])
-    )
-    await callback.answer()
+async def help_callback(callback: types.CallbackQuery):
+    await show_help(callback)
 
 @dp.callback_query(lambda c: c.data == "main_menu")
-async def main_menu(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("🔧 Главное меню\n\nВыберите действие:", reply_markup=get_main_keyboard())
-    await callback.answer()
+async def main_menu_callback(callback: types.CallbackQuery, state: FSMContext):
+    await back_to_menu(callback, state)
 
 @dp.callback_query(lambda c: c.data == "repair")
-async def repair(callback: types.CallbackQuery, state: FSMContext):
+async def repair_callback(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🍎 Apple", callback_data="brand_Apple")],
         [InlineKeyboardButton(text="📱 Xiaomi", callback_data="brand_Xiaomi")],
@@ -399,8 +405,26 @@ async def get_phone(message: types.Message, state: FSMContext):
     await message.answer("Выберите действие:", reply_markup=get_main_keyboard())
     await state.clear()
 
+# ============ ВЕБ-СЕРВЕР ДЛЯ HEALTH CHECK ============
+async def health_check(request):
+    return web.Response(text="Bot is running")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get('PORT', 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Web server started on port {port}")
+
+# ============ ОСНОВНАЯ ФУНКЦИЯ ============
 async def main():
-    await setup_bot_commands()  # Устанавливаем команды в меню
+    # Запускаем веб-сервер в фоне
+    asyncio.create_task(start_web_server())
+    
+    await setup_bot_commands()
     print("=" * 55)
     print("🤖 БОТ ЗАПУЩЕН!")
     print("✅ Добавлена кнопка MENU внизу экрана")
